@@ -221,7 +221,7 @@ func (h *Handler) writeCommandContext(ctx context.Context, data []byte, readResp
 	if readResp {
 		// read response
 		err = h.readResponseContext(ctx, &h.bufResponse)
-		return h.bufDischard.Bytes(), err
+		return h.bufResponse.Bytes(), err
 	}
 
 	return nil, nil

@@ -54,4 +54,7 @@ func TestRegex(t *testing.T) {
 		fmt.Println(line, ":", matched) // true
 		fmt.Println(err)                // nil (regexp is valid)
 	}
+
+	// test parsing
+
 }

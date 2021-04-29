@@ -4,10 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"regexp"
 	"time"
 )
+
+// ResponseFunc handle response from device.
+// It should return true if expected response is valid.
+// If the response is error, it will return error
+type ResponseFunc func(response []byte) (bool, error)
 
 // list of constant
 const (
@@ -16,23 +22,30 @@ const (
 )
 
 const (
-	okPattern  = "OK(.*)\r\n"
-	errPattern = "ERROR:(.*)\r\n"
+	OkPattern  = "OK(.*)\r\n"
+	ErrPattern = "ERROR:(.*)\r\n"
 )
 
 // known data
-var CRLF = []byte{CR, LF}
+var (
+	CRLF        = []byte{CR, LF}
+	RegexpOk    = regexp.MustCompile(OkPattern)
+	RegexpError = regexp.MustCompile(ErrPattern)
+)
 
 // Handler
 type Handler struct {
-	dev         io.ReadWriter
-	rq          time.Duration
-	chunk       []byte
-	lastWritten int
-	bufDischard bytes.Buffer
-	bufResponse bytes.Buffer
-	reOK        *regexp.Regexp
-	reError     *regexp.Regexp
+	dev            io.ReadWriter
+	rq             time.Duration
+	chunk          []byte
+	lastWritten    int
+	bufDischard    bytes.Buffer
+	bufResponse    bytes.Buffer
+	reOK           *regexp.Regexp
+	reError        *regexp.Regexp
+	fnResp         ResponseFunc
+	maxReadTimeout time.Duration
+	discard        bool
 }
 
 // NewHandler creates AT+Command Handler.
@@ -40,7 +53,7 @@ type Handler struct {
 func NewHandler(dev io.ReadWriter, rqDuration time.Duration, reOK, reError string) (*Handler, error) {
 	// OK pattern
 	if reOK == "" {
-		reOK = okPattern
+		reOK = OkPattern
 	}
 	okRe, err := regexp.Compile(reOK)
 	if err != nil {
@@ -49,7 +62,7 @@ func NewHandler(dev io.ReadWriter, rqDuration time.Duration, reOK, reError strin
 
 	// Error pattern
 	if reError == "" {
-		reError = errPattern
+		reError = ErrPattern
 	}
 	errRe, err := regexp.Compile(reError)
 	if err != nil {
@@ -58,12 +71,14 @@ func NewHandler(dev io.ReadWriter, rqDuration time.Duration, reOK, reError strin
 
 	// create handler
 	h := Handler{
-		dev:         dev,
-		rq:          rqDuration,
-		chunk:       make([]byte, 1024),
-		lastWritten: 0,
-		reOK:        okRe,
-		reError:     errRe,
+		dev:            dev,
+		rq:             rqDuration,
+		chunk:          make([]byte, 1024),
+		lastWritten:    0,
+		reOK:           okRe,
+		reError:        errRe,
+		maxReadTimeout: 10 * time.Second,
+		discard:        true,
 	}
 
 	return &h, nil
@@ -71,7 +86,53 @@ func NewHandler(dev io.ReadWriter, rqDuration time.Duration, reOK, reError strin
 
 // NewDefaultHandler return AT command with default parameters
 func NewDefaultHandler(dev io.ReadWriter) (*Handler, error) {
-	return NewHandler(dev, 10*time.Millisecond, okPattern, errPattern)
+	return NewHandler(dev, 10*time.Millisecond, OkPattern, ErrPattern)
+}
+
+// OnResponse Handler
+func (h *Handler) OnResponse(fn ResponseFunc) *Handler {
+	h.fnResp = fn
+	return h
+}
+
+// MaxReadTimeout set maximum data read timeout
+func (h *Handler) MaxReadTimeout(timeout time.Duration) *Handler {
+	h.maxReadTimeout = timeout
+	return h
+}
+
+// PatternOK set regex for OK response
+func (h *Handler) PatternOK(pattern string) *Handler {
+	if pattern == "" {
+		pattern = OkPattern
+	}
+	okRe := regexp.MustCompile(pattern)
+	h.reOK = okRe
+
+	return h
+}
+
+// PatternError set regex for OK response
+func (h *Handler) PatternError(pattern string) *Handler {
+	if pattern == "" {
+		pattern = OkPattern
+	}
+	errRe := regexp.MustCompile(pattern)
+	h.reError = errRe
+
+	return h
+}
+
+// ReadQuiescence set time delay between consecutive read
+func (h *Handler) ReadQuiescence(delay time.Duration) *Handler {
+	h.rq = delay
+	return h
+}
+
+// Discard set flag true/false
+func (h *Handler) Discard(v bool) *Handler {
+	h.discard = v
+	return h
 }
 
 // SendContext send command without waiting response
@@ -122,8 +183,10 @@ func (h *Handler) writeCommandContext(ctx context.Context, data []byte, readResp
 	h.lastWritten = 0
 
 	// dischard any data
-	if _, err := h.DiscardContext(ctx); err != nil {
-		return nil, err
+	if h.discard {
+		if _, err := h.DiscardIncomingContext(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	// send command
@@ -157,7 +220,7 @@ func (h *Handler) writeCommandContext(ctx context.Context, data []byte, readResp
 
 	if readResp {
 		// read response
-		err = h.readCheckContext(ctx, &h.bufResponse)
+		err = h.readResponseContext(ctx, &h.bufResponse)
 		return h.bufDischard.Bytes(), err
 	}
 
@@ -194,19 +257,24 @@ func (h *Handler) DiscardedBuffer() *bytes.Buffer {
 
 // Discard bytes from device.
 // Returned []byte only valid until next modification.
-func (h *Handler) Discard() ([]byte, error) {
-	return h.DiscardContext(context.TODO())
+func (h *Handler) DiscardIncoming() ([]byte, error) {
+	return h.DiscardIncomingContext(context.TODO())
 }
 
 // DiscardContext discards device content
-func (h *Handler) DiscardContext(ctx context.Context) ([]byte, error) {
+func (h *Handler) DiscardIncomingContext(ctx context.Context) ([]byte, error) {
 	err := h.readContext(ctx, &h.bufDischard)
 	return h.bufDischard.Bytes(), err
 }
 
 func (h *Handler) readContext(ctx context.Context, buf *bytes.Buffer) error {
 	buf.Reset()
+	tmUntil := time.Now().Add(h.maxReadTimeout)
 	for {
+		now := time.Now()
+		if now.After(tmUntil) {
+			return errors.New(fmt.Sprintf("Maximum timeout of `%s` exceed", h.maxReadTimeout.String()))
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -231,9 +299,14 @@ func (h *Handler) readContext(ctx context.Context, buf *bytes.Buffer) error {
 	}
 }
 
-func (h *Handler) readCheckContext(ctx context.Context, buf *bytes.Buffer) error {
+func (h *Handler) readResponseContext(ctx context.Context, buf *bytes.Buffer) error {
 	buf.Reset()
+	tmUntil := time.Now().Add(h.maxReadTimeout)
 	for {
+		now := time.Now()
+		if now.After(tmUntil) {
+			return errors.New(fmt.Sprintf("Maximum timeout of `%s` exceed", h.maxReadTimeout.String()))
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -245,15 +318,21 @@ func (h *Handler) readCheckContext(ctx context.Context, buf *bytes.Buffer) error
 			}
 
 			// check error
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return nil
-				}
+			if err != nil && !errors.Is(err, io.EOF) {
 				return err
 			}
 
-			// response is OK or Error
-			if h.IsSuccess() || h.IsError() {
+			// check if response is set
+			if h.fnResp != nil {
+				ok, err := h.fnResp(buf.Bytes())
+				if err != nil {
+					return err
+				}
+
+				if ok {
+					return nil
+				}
+			} else if err != nil && errors.Is(err, io.EOF) {
 				return nil
 			}
 

@@ -1,0 +1,6 @@
+{
+    dev: {
+        port: "/dev/ttyS0"
+        readTimeout: "500ms"
+    }
+}

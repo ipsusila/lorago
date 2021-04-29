@@ -116,8 +116,8 @@ func (r *Rak811) sendCommand(cmd string, reOk, reErr *regexp.Regexp, maxWait tim
 		response, err = r.at.WriteString(cmd)
 		r.lastError = err
 
-		fmt.Printf("CMD: %s, ERR: %v, ok: %s, error: %s, done: %v\n",
-			cmd, err, reOk.String(), reErr.String(), done)
+		fmt.Printf("CMD: %s, ERR: %v, ok: %q error: %q, done: %v, resp=%q\n",
+			cmd, err, reOk.String(), reErr.String(), done, response)
 	}
 
 	return response, r.lastError

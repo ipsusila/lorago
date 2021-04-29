@@ -2,6 +2,7 @@ package rak
 
 import (
 	"bytes"
+	"fmt"
 	"regexp"
 	"time"
 
@@ -114,6 +115,9 @@ func (r *Rak811) sendCommand(cmd string, reOk, reErr *regexp.Regexp, maxWait tim
 		}
 		response, err = r.at.WriteString(cmd)
 		r.lastError = err
+
+		fmt.Printf("CMD: %s, ERR: %s, ok: %s, error: %s, done: %v\n",
+			cmd, err.Error(), reOk.String(), reErr.String(), done)
 	}
 
 	return response, r.lastError

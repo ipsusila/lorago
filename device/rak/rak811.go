@@ -94,11 +94,14 @@ func (r *Rak811) SendCommand(cmd string, okPattern, errPattern string, maxWait t
 func (r *Rak811) sendCommand(cmd string, reOk, reErr *regexp.Regexp, maxWait time.Duration) (string, error) {
 	done := false
 	fnResp := func(data []byte) (bool, error) {
-		if bytes.Compare(data, WakeUp) == 0 {
-			return true, nil
-		} else if reOk.Match(data) || reErr.Match(data) {
-			done = true
-			return true, nil
+		if len(data) > 0 {
+			fmt.Printf("Incoming data: %q\n", string(data))
+			if bytes.Compare(data, WakeUp) == 0 {
+				return true, nil
+			} else if reOk.Match(data) || reErr.Match(data) {
+				done = true
+				return true, nil
+			}
 		}
 		return false, nil
 	}

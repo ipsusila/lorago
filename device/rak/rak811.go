@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"time"
 
@@ -18,7 +19,7 @@ const (
 )
 
 // wake up constant
-var WakeUp = []byte("Wake Up.\r\n")
+var WakeUp = []byte("Wake up.\r\n")
 
 type Rak811 struct {
 	dev       serial.Device
@@ -42,33 +43,53 @@ func NewRak811(confFile string) (*Rak811, error) {
 	}
 
 	// create command handler
-	at, err := atcmd.NewDefaultHandler(dev)
-	if err != nil {
-		return nil, err
-	}
+	at := atcmd.NewDefaultHandler(dev)
 
 	// create new Rak811 device
 	ra := Rak811{
 		dev: dev,
 		at:  at,
 	}
+
+	// setup handler
+	at.OnError(ra.onError)
+	at.OnResponse(ra.onResponse)
+
+	// Default comm timeout
+	ra.conf.CommTimeout.Duration = 10 * time.Second
 	if err := op.AsStruct(&ra.conf); err != nil {
 		return nil, err
 	}
+
+	// run loop
+	at.Run()
 
 	return &ra, nil
 }
 
 // Close connection to device
 func (r *Rak811) Close() error {
+	if r.at != nil {
+		r.at.Close()
+		r.at = nil
+	}
 	if dev := r.dev; dev != nil {
 		r.dev = nil
 		return dev.Close()
 	}
-	if r.at != nil {
-		r.at = nil
-	}
 	return nil
+}
+
+// OnError handler
+func (r *Rak811) onError(err error, done chan<- bool) {
+	log.Printf("Device error: %v\n", err)
+	r.Close()
+	done <- true
+}
+
+//OnResponse function
+func (r *Rak811) onResponse(data *atcmd.SerialData, err error) {
+	log.Printf("@%s CMD: %q, DATA: %q", data.At.Format(time.RFC3339), string(data.Cmd), string(data.Response))
 }
 
 // LastError return latest error
@@ -101,18 +122,19 @@ func (r *Rak811) SendCommandContext(ctx context.Context, cmd string, okPattern, 
 }
 
 func (r *Rak811) sendCommandContext(ctx context.Context, cmd string, reOk, reErr *regexp.Regexp) (string, error) {
-	done := false
-	fnResp := func(data []byte) (bool, error) {
-		if len(data) > 0 {
-			fmt.Printf("Incoming data: %q\n", string(data))
-			if bytes.Compare(data, WakeUp) == 0 {
-				return true, nil
-			} else if reOk.Match(data) || reErr.Match(data) {
-				done = true
-				return true, nil
-			}
+	done := make(chan bool, 1)
+	resend := make(chan bool, 1)
+	quit := make(chan bool)
+	fnResp := func(data *atcmd.SerialData, err error) {
+		fmt.Printf("Incoming data: %q\n", string(data.Response))
+		if err != nil {
+			close(quit)
+		} else if bytes.Compare(data.Response, WakeUp) == 0 {
+			resend <- true
+		} else if reOk.Match(data.Response) || reErr.Match(data.Response) {
+			close(done)
 		}
-		return false, nil
+
 	}
 	// setup context for AT+COMMAND
 	ctxAt, cancel := context.WithTimeout(ctx, r.conf.CommTimeout.Duration)
@@ -122,20 +144,25 @@ func (r *Rak811) sendCommandContext(ctx context.Context, cmd string, reOk, reErr
 	var err error
 	var response string
 	r.at.OnResponse(fnResp)
-	for !done {
+
+	id, err := r.at.WriteStringContext(ctxAt, cmd, fnResp)
+	if err != nil {
+		return "", err
+	}
+	for {
 		select {
 		case <-ctx.Done():
 			return response, ctx.Err()
-		default:
-			response, err = r.at.WriteStringContext(ctxAt, cmd)
-			r.lastError = err
-
-			fmt.Printf("CMD: %s, ERR: %v, ok: %q error: %q, done: %v, resp=%q\n",
-				cmd, err, reOk.String(), reErr.String(), done, response)
+		case <-done:
+			data := r.at.TakeResponse(id)
+			return string(data.Response), nil
+		case <-resend:
+			id, err = r.at.WriteStringContext(ctxAt, cmd, fnResp)
+			if err != nil {
+				return "", err
+			}
 		}
 	}
-
-	return response, r.lastError
 }
 
 // FirmwareVersion return firmware version

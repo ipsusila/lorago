@@ -1,6 +1,8 @@
 {
     dev: {
-        port: "/dev/ttyS0"
+        //port: "/dev/ttyS0"
+        port: "COM9"
         readTimeout: "500ms"
     }
+    commTimeout: 30s
 }

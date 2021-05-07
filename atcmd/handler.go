@@ -2,17 +2,22 @@ package atcmd
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"errors"
 	"io"
 	"regexp"
+	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ResponseFunc handle response from device.
 // It should return true if expected response is valid.
 // If the response is error, it will return error
-type ResponseFunc func(response []byte) (bool, error)
+type ResponseFunc func(data *SerialData, err error)
+type ErrorFunc func(err error, done chan<- bool)
 
 // list of constant
 const (
@@ -34,56 +39,77 @@ var (
 
 // Handler
 type Handler struct {
-	dev         io.ReadWriter
-	rq          time.Duration
-	chunk       []byte
-	lastWritten int
-	bufDischard bytes.Buffer
-	bufResponse bytes.Buffer
-	reOK        *regexp.Regexp
-	reError     *regexp.Regexp
-	fnResp      ResponseFunc
-	discard     bool
+	sync.Mutex
+	dev        io.ReadWriter
+	rq         time.Duration
+	fnResp     ResponseFunc
+	fnError    ErrorFunc
+	serialData *list.List
+	cancel     context.CancelFunc
+}
+
+// SerialData stores information about serial data
+type SerialData struct {
+	At       time.Time
+	ID       uuid.UUID
+	Cmd      []byte
+	Response []byte
+	buf      *bytes.Buffer
+	fn       ResponseFunc
+}
+
+// Copy serial data
+func (sd *SerialData) Copy() *SerialData {
+	stream := make([]byte, sd.buf.Len())
+	copy(stream, sd.buf.Bytes())
+	d := SerialData{
+		At:       sd.At,
+		ID:       sd.ID,
+		Cmd:      sd.Cmd,
+		Response: stream,
+	}
+	return &d
 }
 
 // NewHandler creates AT+Command Handler.
 // rq: read quiescence time, i.e. delay between consecutive read
-func NewHandler(dev io.ReadWriter, rqDuration time.Duration, reOK, reError string) (*Handler, error) {
-	// OK pattern
-	if reOK == "" {
-		reOK = OkPattern
-	}
-	okRe, err := regexp.Compile(reOK)
-	if err != nil {
-		return nil, err
-	}
-
-	// Error pattern
-	if reError == "" {
-		reError = ErrPattern
-	}
-	errRe, err := regexp.Compile(reError)
-	if err != nil {
-		return nil, err
-	}
-
+func NewHandler(dev io.ReadWriter, rqDuration time.Duration, onResp ResponseFunc, onErr ErrorFunc) *Handler {
 	// create handler
 	h := Handler{
-		dev:         dev,
-		rq:          rqDuration,
-		chunk:       make([]byte, 1024),
-		lastWritten: 0,
-		reOK:        okRe,
-		reError:     errRe,
-		discard:     true,
+		dev:        dev,
+		rq:         rqDuration,
+		serialData: list.New(),
+		fnResp:     onResp,
+		fnError:    onErr,
 	}
-
-	return &h, nil
+	return &h
 }
 
 // NewDefaultHandler return AT command with default parameters
-func NewDefaultHandler(dev io.ReadWriter) (*Handler, error) {
-	return NewHandler(dev, 10*time.Millisecond, OkPattern, ErrPattern)
+func NewDefaultHandler(dev io.ReadWriter) *Handler {
+	return NewHandler(dev, 10*time.Millisecond, nil, nil)
+}
+
+// RunContext handler
+func (h *Handler) RunContext(ctx context.Context) {
+	// read loop with cancellable context
+	ctx, cancel := context.WithCancel(ctx)
+	h.cancel = cancel
+	go h.readAsyncContext(ctx)
+
+}
+
+// Run read loop
+func (h *Handler) Run() {
+	h.RunContext(context.TODO())
+}
+
+// Close handler
+func (h *Handler) Close() error {
+	if h.cancel != nil {
+		h.cancel()
+	}
+	return nil
 }
 
 // OnResponse Handler
@@ -92,25 +118,8 @@ func (h *Handler) OnResponse(fn ResponseFunc) *Handler {
 	return h
 }
 
-// PatternOK set regex for OK response
-func (h *Handler) PatternOK(pattern string) *Handler {
-	if pattern == "" {
-		pattern = OkPattern
-	}
-	okRe := regexp.MustCompile(pattern)
-	h.reOK = okRe
-
-	return h
-}
-
-// PatternError set regex for OK response
-func (h *Handler) PatternError(pattern string) *Handler {
-	if pattern == "" {
-		pattern = OkPattern
-	}
-	errRe := regexp.MustCompile(pattern)
-	h.reError = errRe
-
+func (h *Handler) OnError(fn ErrorFunc) *Handler {
+	h.fnError = fn
 	return h
 }
 
@@ -120,15 +129,9 @@ func (h *Handler) ReadQuiescence(delay time.Duration) *Handler {
 	return h
 }
 
-// Discard set flag true/false
-func (h *Handler) Discard(v bool) *Handler {
-	h.discard = v
-	return h
-}
-
 // SendContext send command without waiting response
 func (h *Handler) SendContext(ctx context.Context, cmd []byte) error {
-	_, err := h.writeCommandContext(ctx, cmd, false)
+	_, _, err := h.writeCommandContext(ctx, cmd, nil)
 	return err
 }
 
@@ -149,42 +152,30 @@ func (h *Handler) SendStringContext(ctx context.Context, cmd string) error {
 
 // Write command to device
 func (h *Handler) Write(cmd []byte) (int, error) {
-	err := h.WriteContext(context.TODO(), cmd)
-	return h.lastWritten, err
+	_, n, err := h.WriteContext(context.TODO(), cmd, nil)
+	return n, err
 }
 
 // WriteContext write command with given context
-func (h *Handler) WriteContext(ctx context.Context, cmd []byte) error {
-	_, err := h.writeCommandContext(ctx, cmd, true)
-	return err
+func (h *Handler) WriteContext(ctx context.Context, cmd []byte, fn ResponseFunc) (uuid.UUID, int, error) {
+	return h.writeCommandContext(ctx, cmd, fn)
 }
 
 // WriteString to the device
-func (h *Handler) WriteString(cmd string) (string, error) {
-	return h.WriteStringContext(context.TODO(), cmd)
+func (h *Handler) WriteString(cmd string, fn ResponseFunc) (uuid.UUID, error) {
+	return h.WriteStringContext(context.TODO(), cmd, fn)
 }
 
-func (h *Handler) WriteStringContext(ctx context.Context, cmd string) (string, error) {
-	resp, err := h.writeCommandContext(ctx, []byte(cmd), true)
-	return string(resp), err
+func (h *Handler) WriteStringContext(ctx context.Context, cmd string, fn ResponseFunc) (uuid.UUID, error) {
+	id, _, err := h.writeCommandContext(ctx, []byte(cmd), fn)
+	return id, err
 }
 
-func (h *Handler) writeCommandContext(ctx context.Context, data []byte, readResp bool) ([]byte, error) {
-	// no bytes writen yet
-	h.lastWritten = 0
-
-	// dischard any data
-	if h.discard {
-		if _, err := h.DiscardIncomingContext(ctx); err != nil {
-			return nil, err
-		}
-	}
-
+func (h *Handler) writeCommandContext(ctx context.Context, data []byte, fn ResponseFunc) (uuid.UUID, int, error) {
 	// send command
 	nw, err := h.dev.Write(data)
-	h.lastWritten = nw
 	if err != nil {
-		return nil, err
+		return uuid.Nil, nw, err
 	}
 
 	// do we need to add CR and LF
@@ -202,28 +193,26 @@ func (h *Handler) writeCommandContext(ctx context.Context, data []byte, readResp
 
 	// write crlf
 	if addCRLF {
-		nw, err := h.dev.Write(CRLF)
+		n, err := h.dev.Write(CRLF)
 		if err != nil {
-			return nil, err
+			return uuid.Nil, nw, err
 		}
-		h.lastWritten += nw
+		nw += n
 	}
 
-	if readResp {
-		// read response
-		err = h.readResponseContext(ctx, &h.bufResponse)
-		return h.bufResponse.Bytes(), err
-	}
-
-	return nil, nil
+	// set command
+	id := h.setCommand(data, fn)
+	return id, nw, nil
 }
 
 // Reset content
 func (h *Handler) Reset() {
-	h.bufDischard.Reset()
-	h.bufResponse.Reset()
+	h.Lock()
+	defer h.Unlock()
+	h.serialData.Init()
 }
 
+/*
 // ResponseBytes return reponse in byte array.
 // The []byte is only valid until next modification.
 func (h *Handler) ResponseBytes() []byte {
@@ -234,7 +223,9 @@ func (h *Handler) ResponseBytes() []byte {
 func (h *Handler) ResponseBuffer() *bytes.Buffer {
 	return &h.bufResponse
 }
+*/
 
+/*
 // DiscardedBytes return last discarded content.
 // Returned bytes only valid until last modification.
 func (h *Handler) DiscardedBytes() []byte {
@@ -254,16 +245,16 @@ func (h *Handler) DiscardIncoming() ([]byte, error) {
 
 // DiscardContext discards device content
 func (h *Handler) DiscardIncomingContext(ctx context.Context) ([]byte, error) {
-	err := h.readContext(ctx, &h.bufDischard)
+	err := h.readDiscardContext(ctx, &h.bufDischard)
 	return h.bufDischard.Bytes(), err
 }
 
-func (h *Handler) readContext(ctx context.Context, buf *bytes.Buffer) error {
+func (h *Handler) readDiscardContext(ctx context.Context, buf *bytes.Buffer) error {
 	buf.Reset()
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil
 		default:
 			// Read from device and save to buffer
 			n, err := h.dev.Read(h.chunk)
@@ -284,7 +275,9 @@ func (h *Handler) readContext(ctx context.Context, buf *bytes.Buffer) error {
 		}
 	}
 }
+*/
 
+/*
 func (h *Handler) readResponseContext(ctx context.Context, buf *bytes.Buffer) error {
 	buf.Reset()
 	for {
@@ -322,15 +315,101 @@ func (h *Handler) readResponseContext(ctx context.Context, buf *bytes.Buffer) er
 		}
 	}
 }
+*/
 
-// return true if command is success
-func (h *Handler) IsSuccess() bool {
-	resp := h.ResponseBytes()
-	return h.reOK.Match(resp)
+func (h *Handler) readAsyncContext(ctx context.Context) error {
+	chunk := make([]byte, 1024)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			// Read from device and save to buffer
+			n, err := h.dev.Read(chunk)
+			if n > 0 {
+				if errors.Is(err, io.EOF) {
+					err = nil
+				}
+				h.setResponseAsync(chunk[:n], err)
+			}
+
+			// check error
+			if err != nil && !errors.Is(err, io.EOF) {
+				if h.fnError != nil {
+					done := make(chan bool, 1)
+					go h.fnError(err, done)
+					v := <-done
+					if v {
+						return err
+					}
+				}
+			}
+
+			// wait a moment
+			time.Sleep(h.rq)
+		}
+	}
 }
 
-// return true if error
-func (h *Handler) IsError() bool {
-	resp := h.ResponseBytes()
-	return h.reError.Match(resp)
+// set command called when newly added
+func (h *Handler) setCommand(cmd []byte, fn ResponseFunc) uuid.UUID {
+	ser := SerialData{
+		At:  time.Now(),
+		Cmd: cmd,
+		ID:  uuid.New(),
+		buf: &bytes.Buffer{},
+		fn:  fn,
+	}
+	h.Lock()
+	h.serialData.PushBack(&ser)
+	h.Unlock()
+
+	return ser.ID
+}
+
+func (h *Handler) setResponseAsync(resp []byte, err error) {
+	h.Lock()
+	defer h.Unlock()
+	if elem := h.serialData.Back(); elem != nil {
+		if elem.Value != nil {
+			if ser, ok := elem.Value.(*SerialData); ok {
+				ser.buf.Write(resp)
+
+				// notify command
+				if ser.fn != nil || h.fnResp != nil {
+					d := ser.Copy()
+					if ser.fn != nil {
+						go ser.fn(d, err)
+					}
+					if h.fnResp != nil {
+						go h.fnResp(d, err)
+					}
+				}
+			}
+		}
+	} else {
+		// create new serial data
+		ser := SerialData{
+			At:  time.Now(),
+			buf: &bytes.Buffer{},
+		}
+		ser.buf.Write(resp)
+		h.serialData.PushBack(&ser)
+	}
+}
+
+// TakeResponse from buffer
+func (h *Handler) TakeResponse(id uuid.UUID) *SerialData {
+	h.Lock()
+	defer h.Unlock()
+
+	elem := h.serialData.Back()
+	for elem != nil {
+		if ser, ok := elem.Value.(*SerialData); ok {
+			h.serialData.Remove(elem)
+			return ser
+		}
+		elem = elem.Prev()
+	}
+	return nil
 }

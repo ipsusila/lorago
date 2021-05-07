@@ -407,6 +407,7 @@ func (h *Handler) TakeResponse(id uuid.UUID) *SerialData {
 	for elem != nil {
 		if ser, ok := elem.Value.(*SerialData); ok {
 			h.serialData.Remove(elem)
+			ser.Response = ser.buf.Bytes()
 			return ser
 		}
 		elem = elem.Prev()

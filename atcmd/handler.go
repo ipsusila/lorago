@@ -14,8 +14,6 @@ import (
 )
 
 // ResponseFunc handle response from device.
-// It should return true if expected response is valid.
-// If the response is error, it will return error
 type ResponseFunc func(data *SerialData, err error)
 type ErrorFunc func(err error, done chan<- bool)
 
@@ -46,6 +44,7 @@ type Handler struct {
 	fnError    ErrorFunc
 	serialData *list.List
 	cancel     context.CancelFunc
+	done       chan bool
 }
 
 // SerialData stores information about serial data
@@ -81,6 +80,7 @@ func NewHandler(dev io.ReadWriter, rqDuration time.Duration, onResp ResponseFunc
 		serialData: list.New(),
 		fnResp:     onResp,
 		fnError:    onErr,
+		done:       make(chan bool, 1),
 	}
 	return &h
 }
@@ -129,49 +129,22 @@ func (h *Handler) ReadQuiescence(delay time.Duration) *Handler {
 	return h
 }
 
-// SendContext send command without waiting response
-func (h *Handler) SendContext(ctx context.Context, cmd []byte) error {
-	_, _, err := h.writeCommandContext(ctx, cmd, nil)
-	return err
-}
-
-// Send command to device
-func (h *Handler) Send(cmd []byte) error {
-	return h.SendContext(context.TODO(), cmd)
-}
-
-// SendString command
-func (h *Handler) SendString(cmd string) error {
-	return h.Send([]byte(cmd))
-}
-
-// SendStringContext send command in string
-func (h *Handler) SendStringContext(ctx context.Context, cmd string) error {
-	return h.SendContext(ctx, []byte(cmd))
-}
-
 // Write command to device
 func (h *Handler) Write(cmd []byte) (int, error) {
-	_, n, err := h.WriteContext(context.TODO(), cmd, nil)
+	_, n, err := h.WriteBytes(cmd, nil)
 	return n, err
 }
 
-// WriteContext write command with given context
-func (h *Handler) WriteContext(ctx context.Context, cmd []byte, fn ResponseFunc) (uuid.UUID, int, error) {
-	return h.writeCommandContext(ctx, cmd, fn)
+// WriteBytes write command with given context
+func (h *Handler) WriteBytes(cmd []byte, fn ResponseFunc) (uuid.UUID, int, error) {
+	return h.writeCommand(cmd, fn)
 }
 
-// WriteString to the device
-func (h *Handler) WriteString(cmd string, fn ResponseFunc) (uuid.UUID, error) {
-	return h.WriteStringContext(context.TODO(), cmd, fn)
+func (h *Handler) WriteString(cmd string, fn ResponseFunc) (uuid.UUID, int, error) {
+	return h.writeCommand([]byte(cmd), fn)
 }
 
-func (h *Handler) WriteStringContext(ctx context.Context, cmd string, fn ResponseFunc) (uuid.UUID, error) {
-	id, _, err := h.writeCommandContext(ctx, []byte(cmd), fn)
-	return id, err
-}
-
-func (h *Handler) writeCommandContext(ctx context.Context, data []byte, fn ResponseFunc) (uuid.UUID, int, error) {
+func (h *Handler) writeCommand(data []byte, fn ResponseFunc) (uuid.UUID, int, error) {
 	// send command
 	nw, err := h.dev.Write(data)
 	if err != nil {
@@ -212,112 +185,8 @@ func (h *Handler) Reset() {
 	h.serialData.Init()
 }
 
-/*
-// ResponseBytes return reponse in byte array.
-// The []byte is only valid until next modification.
-func (h *Handler) ResponseBytes() []byte {
-	return h.bufResponse.Bytes()
-}
-
-// ResponseBuffer return buffer that stores response bytes.
-func (h *Handler) ResponseBuffer() *bytes.Buffer {
-	return &h.bufResponse
-}
-*/
-
-/*
-// DiscardedBytes return last discarded content.
-// Returned bytes only valid until last modification.
-func (h *Handler) DiscardedBytes() []byte {
-	return h.bufDischard.Bytes()
-}
-
-// DiscardedBuffer return discarded buffer
-func (h *Handler) DiscardedBuffer() *bytes.Buffer {
-	return &h.bufDischard
-}
-
-// Discard bytes from device.
-// Returned []byte only valid until next modification.
-func (h *Handler) DiscardIncoming() ([]byte, error) {
-	return h.DiscardIncomingContext(context.TODO())
-}
-
-// DiscardContext discards device content
-func (h *Handler) DiscardIncomingContext(ctx context.Context) ([]byte, error) {
-	err := h.readDiscardContext(ctx, &h.bufDischard)
-	return h.bufDischard.Bytes(), err
-}
-
-func (h *Handler) readDiscardContext(ctx context.Context, buf *bytes.Buffer) error {
-	buf.Reset()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-			// Read from device and save to buffer
-			n, err := h.dev.Read(h.chunk)
-			if n > 0 {
-				buf.Write(h.chunk[:n])
-			}
-
-			// check error
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return nil
-				}
-				return err
-			}
-
-			// wait a moment
-			time.Sleep(h.rq)
-		}
-	}
-}
-*/
-
-/*
-func (h *Handler) readResponseContext(ctx context.Context, buf *bytes.Buffer) error {
-	buf.Reset()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			// Read from device and save to buffer
-			n, err := h.dev.Read(h.chunk)
-			if n > 0 {
-				buf.Write(h.chunk[:n])
-			}
-
-			// check error
-			if err != nil && !errors.Is(err, io.EOF) {
-				return err
-			}
-
-			// check if response is set
-			if h.fnResp != nil {
-				ok, err := h.fnResp(buf.Bytes())
-				if err != nil {
-					return err
-				}
-
-				if ok {
-					return nil
-				}
-			} else if err != nil && errors.Is(err, io.EOF) {
-				return nil
-			}
-
-			// wait a moment
-			time.Sleep(h.rq)
-		}
-	}
-}
-*/
-
 func (h *Handler) readAsyncContext(ctx context.Context) error {
+	defer close(h.done)
 	chunk := make([]byte, 1024)
 	for {
 		select {
@@ -395,6 +264,10 @@ func (h *Handler) setResponseAsync(resp []byte, err error) {
 		}
 		ser.buf.Write(resp)
 		h.serialData.PushBack(&ser)
+		if h.fnResp != nil {
+			d := ser.Copy()
+			go h.fnResp(d, err)
+		}
 	}
 }
 
@@ -413,4 +286,47 @@ func (h *Handler) TakeResponse(id uuid.UUID) *SerialData {
 		elem = elem.Prev()
 	}
 	return nil
+}
+
+// ResponseBytes read all data
+func (h *Handler) ResponseBytes() []byte {
+	h.Lock()
+	defer h.Unlock()
+	resp := []byte{}
+
+	elem := h.serialData.Front()
+	for elem != nil {
+		if elem.Value != nil {
+			if ser, ok := elem.Value.(*SerialData); ok {
+				resp = append(resp, ser.buf.Bytes()...)
+			}
+		}
+	}
+
+	return resp
+}
+
+// IsRunning return true if read loop running
+func (h *Handler) IsRunning() bool {
+	select {
+	case <-h.done:
+		return false
+	default:
+		return true
+	}
+}
+
+// WaitDone wait until done
+func (h *Handler) WaitDoneContext(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-h.done:
+		return nil
+	}
+}
+
+// WaitDone wait until read loop is closed
+func (h *Handler) WaitDone() error {
+	return h.WaitDoneContext(context.TODO())
 }

@@ -1,8 +1,17 @@
 {
     dev: {
         //port: "/dev/ttyS0"
-        port: "COM9"
+        port: "COM3"
         readTimeout: "500ms"
     }
-    commTimeout: 30s
+    defaultTimeout: 30s
+    responseOutput: rak811-out.txt
+    verbose: true
+    initCommands: [
+        {at: "at+version", timeout: "2s"}
+        {at: "at+help", regexOk: "(?s)OK(.*)List End(.*)\\*\\r\\n", timeout: "5s"}
+        {at: "at+get_config=device:status", regexOk: "(?s)OK(.*)List End(.*)\\*\\r\\n", timeout: "5s"}
+        {at: "at+get_config=lora:status", regexOk: "(?s)OK(.*)List End(.*)\\*\\r\\n", timeout: "5s"}
+        //{at: "at+join", timeout: "60s"}
+    ]
 }

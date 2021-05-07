@@ -1,5 +1,13 @@
 package rak
 
+import (
+	"regexp"
+	"time"
+
+	"github.com/ipsusila/lorago/atcmd"
+	"github.com/ipsusila/opt"
+)
+
 // List of known at command.
 // P2P config at+set_config=lorap2p:<frequency>:<spreadfact>:<bandwidth>:<codingrate>:<preamlen>:<power>
 const (
@@ -55,3 +63,47 @@ const (
 	atLoraSenderP2P            = "at+set_config=lorap2p:transfer_mode:2"
 	atLoraSendP2P              = "at+send=lorap2p:%02X"
 )
+
+// Command data
+type Command struct {
+	AT          string       `json:"at"`
+	Timeout     opt.Duration `json:"timeout"`
+	RegexOK     string       `json:"regexOk"`
+	RegexError  string       `json:"regexError"`
+	RegexWakeup string       `json:"regexWakeup"`
+}
+
+// NewCommand create command with timeout and default configuration
+func NewCommand(at string, timeout time.Duration) *Command {
+	return &Command{
+		AT:      at,
+		Timeout: opt.Duration{Duration: timeout},
+	}
+}
+
+// ExpressionOK return regex for OK response
+func (c *Command) ExpresionOK() (*regexp.Regexp, error) {
+	expr := c.RegexOK
+	if expr == "" {
+		expr = atcmd.OkPattern
+	}
+	return regexp.Compile(expr)
+}
+
+// ExpressionError return regex for error response
+func (c *Command) ExpresionError() (*regexp.Regexp, error) {
+	expr := c.RegexError
+	if expr == "" {
+		expr = atcmd.ErrPattern
+	}
+	return regexp.Compile(expr)
+}
+
+// ExpressionWakeup return regex for wakeup response
+func (c *Command) ExpresionWakeup() (*regexp.Regexp, error) {
+	expr := c.RegexWakeup
+	if expr == "" {
+		expr = string(WakeUp)
+	}
+	return regexp.Compile(expr)
+}

@@ -74,7 +74,7 @@ func NewConfig(confFile, section string) (Device, error) {
 	serOp := op.Get(section)
 	conf := Config{
 		Baudrate:    115200,
-		ReadTimeout: opt.Duration{Duration: 1 * time.Second},
+		ReadTimeout: opt.Duration{Duration: 250 * time.Millisecond},
 		Size:        8,
 		Parity:      "N",
 		StopBits:    "1",

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"time"
@@ -23,7 +24,11 @@ func main() {
 	}
 	defer r811.Close()
 
-	response, err := r811.SendCommand(*vCommand, *vOk, *vErr, time.Duration(*vTimeout)*time.Second)
+	tmOut := time.Duration(*vTimeout) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), tmOut)
+	defer cancel()
+
+	response, err := r811.SendCommandContext(ctx, *vCommand, *vOk, *vErr, tmOut)
 	if err != nil {
 		fmt.Printf("ERROR: %v\n", err)
 	} else {

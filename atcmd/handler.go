@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"regexp"
 	"time"
@@ -35,17 +34,16 @@ var (
 
 // Handler
 type Handler struct {
-	dev            io.ReadWriter
-	rq             time.Duration
-	chunk          []byte
-	lastWritten    int
-	bufDischard    bytes.Buffer
-	bufResponse    bytes.Buffer
-	reOK           *regexp.Regexp
-	reError        *regexp.Regexp
-	fnResp         ResponseFunc
-	maxReadTimeout time.Duration
-	discard        bool
+	dev         io.ReadWriter
+	rq          time.Duration
+	chunk       []byte
+	lastWritten int
+	bufDischard bytes.Buffer
+	bufResponse bytes.Buffer
+	reOK        *regexp.Regexp
+	reError     *regexp.Regexp
+	fnResp      ResponseFunc
+	discard     bool
 }
 
 // NewHandler creates AT+Command Handler.
@@ -71,14 +69,13 @@ func NewHandler(dev io.ReadWriter, rqDuration time.Duration, reOK, reError strin
 
 	// create handler
 	h := Handler{
-		dev:            dev,
-		rq:             rqDuration,
-		chunk:          make([]byte, 1024),
-		lastWritten:    0,
-		reOK:           okRe,
-		reError:        errRe,
-		maxReadTimeout: 10 * time.Second,
-		discard:        true,
+		dev:         dev,
+		rq:          rqDuration,
+		chunk:       make([]byte, 1024),
+		lastWritten: 0,
+		reOK:        okRe,
+		reError:     errRe,
+		discard:     true,
 	}
 
 	return &h, nil
@@ -92,12 +89,6 @@ func NewDefaultHandler(dev io.ReadWriter) (*Handler, error) {
 // OnResponse Handler
 func (h *Handler) OnResponse(fn ResponseFunc) *Handler {
 	h.fnResp = fn
-	return h
-}
-
-// MaxReadTimeout set maximum data read timeout
-func (h *Handler) MaxReadTimeout(timeout time.Duration) *Handler {
-	h.maxReadTimeout = timeout
 	return h
 }
 
@@ -269,12 +260,7 @@ func (h *Handler) DiscardIncomingContext(ctx context.Context) ([]byte, error) {
 
 func (h *Handler) readContext(ctx context.Context, buf *bytes.Buffer) error {
 	buf.Reset()
-	tmUntil := time.Now().Add(h.maxReadTimeout)
 	for {
-		now := time.Now()
-		if now.After(tmUntil) {
-			return errors.New(fmt.Sprintf("Maximum timeout of `%s` exceed", h.maxReadTimeout.String()))
-		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -301,12 +287,7 @@ func (h *Handler) readContext(ctx context.Context, buf *bytes.Buffer) error {
 
 func (h *Handler) readResponseContext(ctx context.Context, buf *bytes.Buffer) error {
 	buf.Reset()
-	tmUntil := time.Now().Add(h.maxReadTimeout)
 	for {
-		now := time.Now()
-		if now.After(tmUntil) {
-			return errors.New(fmt.Sprintf("Maximum timeout of `%s` exceed", h.maxReadTimeout.String()))
-		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

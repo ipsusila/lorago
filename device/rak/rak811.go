@@ -2,12 +2,14 @@ package rak
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"regexp"
 	"time"
 
 	"github.com/ipsusila/lorago/atcmd"
 	"github.com/ipsusila/lorago/device/serial"
+	"github.com/ipsusila/opt"
 )
 
 const (
@@ -19,16 +21,21 @@ const (
 var WakeUp = []byte("Wake Up.\r\n")
 
 type Rak811 struct {
-	dev        serial.Device
-	at         *atcmd.Handler
-	lastError  error
-	maxTimeout time.Duration
+	dev       serial.Device
+	at        *atcmd.Handler
+	lastError error
+	conf      Config
 }
-
-// TODO: configuration
 
 // NewRak811 create RAK-811 LoRa device connection
 func NewRak811(confFile string) (*Rak811, error) {
+	// configuration
+	op, err := opt.FromFile(confFile, opt.FormatAuto)
+	if err != nil {
+		return nil, err
+	}
+
+	// serial command
 	dev, err := serial.NewConfig(confFile, SectionDevice)
 	if err != nil {
 		return nil, err
@@ -42,9 +49,11 @@ func NewRak811(confFile string) (*Rak811, error) {
 
 	// create new Rak811 device
 	ra := Rak811{
-		dev:        dev,
-		at:         at,
-		maxTimeout: 60 * time.Second,
+		dev: dev,
+		at:  at,
+	}
+	if err := op.AsStruct(&ra.conf); err != nil {
+		return nil, err
 	}
 
 	return &ra, nil
@@ -72,7 +81,7 @@ func (r *Rak811) IsValid() bool {
 	return r.dev != nil && r.at != nil
 }
 
-func (r *Rak811) SendCommand(cmd string, okPattern, errPattern string, maxWait time.Duration) (string, error) {
+func (r *Rak811) SendCommandContext(ctx context.Context, cmd string, okPattern, errPattern string, maxWait time.Duration) (string, error) {
 	if okPattern == "" {
 		okPattern = atcmd.OkPattern
 	}
@@ -88,10 +97,10 @@ func (r *Rak811) SendCommand(cmd string, okPattern, errPattern string, maxWait t
 	if err != nil {
 		return "", err
 	}
-	return r.sendCommand(cmd, reOk, reErr, maxWait)
+	return r.sendCommandContext(ctx, cmd, reOk, reErr)
 }
 
-func (r *Rak811) sendCommand(cmd string, reOk, reErr *regexp.Regexp, maxWait time.Duration) (string, error) {
+func (r *Rak811) sendCommandContext(ctx context.Context, cmd string, reOk, reErr *regexp.Regexp) (string, error) {
 	done := false
 	fnResp := func(data []byte) (bool, error) {
 		if len(data) > 0 {
@@ -105,22 +114,25 @@ func (r *Rak811) sendCommand(cmd string, reOk, reErr *regexp.Regexp, maxWait tim
 		}
 		return false, nil
 	}
+	// setup context for AT+COMMAND
+	ctxAt, cancel := context.WithTimeout(ctx, r.conf.CommTimeout.Duration)
+	defer cancel()
 
 	// setup command
 	var err error
 	var response string
 	r.at.OnResponse(fnResp)
-	timeUntil := time.Now().Add(maxWait)
 	for !done {
-		now := time.Now()
-		if now.After(timeUntil) {
-			break
-		}
-		response, err = r.at.WriteString(cmd)
-		r.lastError = err
+		select {
+		case <-ctx.Done():
+			return response, ctx.Err()
+		default:
+			response, err = r.at.WriteStringContext(ctxAt, cmd)
+			r.lastError = err
 
-		fmt.Printf("CMD: %s, ERR: %v, ok: %q error: %q, done: %v, resp=%q\n",
-			cmd, err, reOk.String(), reErr.String(), done, response)
+			fmt.Printf("CMD: %s, ERR: %v, ok: %q error: %q, done: %v, resp=%q\n",
+				cmd, err, reOk.String(), reErr.String(), done, response)
+		}
 	}
 
 	return response, r.lastError
@@ -128,6 +140,26 @@ func (r *Rak811) sendCommand(cmd string, reOk, reErr *regexp.Regexp, maxWait tim
 
 // FirmwareVersion return firmware version
 func (r *Rak811) FirmwareVersion() (string, error) {
-	// TODO: configure individual max timeout
-	return r.sendCommand(atVersion, atcmd.RegexpOk, atcmd.RegexpError, r.maxTimeout)
+	return r.FirmwareVersionContext(context.TODO())
+}
+
+// FirmwareVersionContext check version
+func (r *Rak811) FirmwareVersionContext(ctx context.Context) (string, error) {
+	return r.sendCommandContext(ctx, atVersion, atcmd.RegexpOk, atcmd.RegexpError)
+}
+
+// SendDataContext sends data through LoRa
+func (r *Rak811) SendDataContext(ctx context.Context, channel int, data []byte) ([]byte, error) {
+	// TODO, OK: pattern, ERROR: Error pattern
+	cmd := fmt.Sprintf(atLoraSend, channel, data)
+	res, err := r.sendCommandContext(ctx, cmd, atcmd.RegexpOk, atcmd.RegexpError)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(res), nil
+}
+
+// SendData sends data through LoRa
+func (r *Rak811) SendData(ctx context.Context, channel int, data []byte) ([]byte, error) {
+	return r.SendDataContext(context.TODO(), channel, data)
 }

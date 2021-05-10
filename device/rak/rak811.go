@@ -3,6 +3,7 @@ package rak
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -29,20 +30,21 @@ const (
 )
 
 const (
-	LoRaReceivePattern = "at\\+recv=(.*):(.*)\\r\\n"
+	LoRaConfirmPattern  = "at\\+recv=(.*):(.*)\\r\\n"
+	LoRaDownLinkPattern = "at\\+recv=(.*):(.*)\\r\\n"
 )
 
 // wake up constant
 var WakeUp = []byte("Wake up.\r\n")
 
 type Rak811 struct {
-	dev       serial.Device
-	at        *atcmd.Handler
-	lastError error
-	conf      Config
-	outCloser io.Closer
-	outWriter io.Writer
-	reRcvExpr *regexp.Regexp
+	dev            serial.Device
+	at             *atcmd.Handler
+	lastError      error
+	conf           Config
+	outCloser      io.Closer
+	outWriter      io.Writer
+	reDownLinkExpr *regexp.Regexp
 
 	loraStatus       *LoRaStatus
 	incomingDataList []*IncomingData
@@ -113,13 +115,14 @@ func NewRak811(confFile string) (*Rak811, error) {
 
 	// Default comm timeout
 	ra.conf.DefaultTimeout.Duration = 10 * time.Second
-	ra.conf.ReceivePattern = LoRaReceivePattern
+	ra.conf.ConfirmPattern = LoRaConfirmPattern
+	ra.conf.DownLinkPattern = LoRaDownLinkPattern
 	if err := op.AsStruct(&ra.conf); err != nil {
 		return nil, err
 	}
 
 	// create receive pattern
-	ra.reRcvExpr = regexp.MustCompile(ra.conf.ReceivePattern)
+	ra.reDownLinkExpr = regexp.MustCompile(ra.conf.DownLinkPattern)
 
 	// get output
 	wr, cl, err := ra.conf.ResponseWriter()
@@ -186,21 +189,23 @@ func (r *Rak811) onResponse(data *atcmd.SerialData, err error) {
 
 	// is it a data?
 	// 2
-	match := r.reRcvExpr.FindSubmatch(data.Response)
+	match := r.reDownLinkExpr.FindSubmatch(data.Response)
 	if n := len(match); n > 0 {
 		if r.conf.Verbose && r.outWriter != nil {
-			fmt.Fprintf(r.outWriter, "DATA>> %02X\n", data.Response)
+			fmt.Fprintf(r.outWriter, "DATA>> %s\n", string(data.Response))
 		}
-		if nd := len(match[n-1]); nd > 0 {
-			buf := make([]byte, nd)
-			copy(buf, match[n-1])
-			incomingData := &IncomingData{
-				At:   time.Now(),
-				Data: buf,
-			}
-			r.incomingDataList = append(r.incomingDataList, incomingData)
-			if r.conf.Verbose && r.outWriter != nil {
-				fmt.Fprintf(r.outWriter, "DATA: %02X\n", buf)
+		if nd := len(match); nd == 3 && len(match[2]) > 0 {
+			buf := make([]byte, len(match[2])/2)
+			nw, err := hex.Decode(buf, match[2])
+			if err == nil {
+				incomingData := &IncomingData{
+					At:   time.Now(),
+					Data: buf[:nw],
+				}
+				r.incomingDataList = append(r.incomingDataList, incomingData)
+				if r.conf.Verbose && r.outWriter != nil {
+					fmt.Fprintf(r.outWriter, "DATA: %02X\n", buf)
+				}
 			}
 		}
 	}
@@ -482,9 +487,9 @@ func (r *Rak811) SendDataContext(ctx context.Context, channel int, data []byte) 
 	// Incomming data: at+recv=2,-59,34,4:50515253
 	// ch,RSSI,SNR?,channel:HEX
 	at := fmt.Sprintf(atLoraSend, channel, data)
-	rcvPattern := LoRaReceivePattern
-	if r.conf.ReceivePattern != "" {
-		rcvPattern = r.conf.ReceivePattern
+	rcvPattern := LoRaConfirmPattern
+	if r.conf.ConfirmPattern != "" {
+		rcvPattern = r.conf.ConfirmPattern
 	}
 	cmd := Command{
 		AT:      at,

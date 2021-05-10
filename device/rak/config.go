@@ -11,11 +11,12 @@ import (
 
 // Config for lora device
 type Config struct {
-	DefaultTimeout opt.Duration `json:"defaultTimeout"`
-	ResponseOutput string       `json:"responseOutput"`
-	Verbose        bool         `json:"verbose"`
-	InitCommands   []*Command   `json:"initCommands"`
-	ReceivePattern string       `json:"receivePattern"`
+	DefaultTimeout  opt.Duration `json:"defaultTimeout"`
+	ResponseOutput  string       `json:"responseOutput"`
+	Verbose         bool         `json:"verbose"`
+	InitCommands    []*Command   `json:"initCommands"`
+	ConfirmPattern  string       `json:"confirmPattern"`
+	DownLinkPattern string       `json:"downLinkPattern"`
 }
 
 // ResponseWriter return writer for the output

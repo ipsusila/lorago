@@ -192,7 +192,7 @@ func (r *Rak811) onResponse(data *atcmd.SerialData, err error) {
 	match := r.reDownLinkExpr.FindSubmatch(data.Response)
 	if n := len(match); n > 0 {
 		if r.conf.Verbose && r.outWriter != nil {
-			fmt.Fprintf(r.outWriter, "DATA>> %s\n", string(data.Response))
+			fmt.Fprintf(r.outWriter, "DATA-Response>> %s\n", string(data.Response))
 		}
 		if nd := len(match); nd == 3 && len(match[2]) > 0 {
 			buf := make([]byte, len(match[2])/2)

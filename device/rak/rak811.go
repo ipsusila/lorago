@@ -1,10 +1,13 @@
 package rak
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ipsusila/errutil"
@@ -18,6 +21,12 @@ const (
 	SectionLoRa   = "lora"
 )
 
+const (
+	StatusOK    = "OK"
+	StatusError = "ERROR"
+	StatusNone  = ""
+)
+
 // wake up constant
 var WakeUp = []byte("Wake up.\r\n")
 
@@ -28,6 +37,38 @@ type Rak811 struct {
 	conf      Config
 	outCloser io.Closer
 	outWriter io.Writer
+
+	loraStatus *LoRaStatus
+}
+
+// LoraSt
+type LoRaStatus struct {
+	At                    time.Time    `json:"at"`
+	WorkMode              string       `json:"workMode"`
+	Region                string       `json:"region"`
+	SendInterval          opt.Duration `json:"sendInterval"`
+	AutoSendStatus        bool         `json:"autoSendStatus"`
+	JoinMode              string       `json:"joinMode"`
+	DevEUI                string       `json:"devEUI"`
+	AppEUI                string       `json:"appEUI"`
+	AppKey                string       `json:"appKey"`
+	Class                 string       `json:"class"`
+	JoinedNetwork         bool         `json:"joinedNetwork"`
+	IsConfirm             bool         `json:"isConfirm"`
+	AdrEnable             bool         `json:"adrEnable"`
+	EnableRepeaterSupport bool         `json:"enableRepeaterSupport"`
+	Rx2ChannelFrequency   int64        `json:"rx2ChannelFrequency"`
+	Rx2ChannelDR          int          `json:"rx2ChannelDR"`
+	RxWindowDuration      opt.Duration `json:"rxWindowDuration"`
+	ReceiveDelay1         opt.Duration `json:"receiveDelay1"`
+	ReceiveDelay2         opt.Duration `json:"receiveDelay2"`
+	JoinAcceptDelay1      opt.Duration `json:"joinAcceptDelay1"`
+	JoinAcceptDelay2      opt.Duration `json:"joinAcceptDelay2"`
+	CurrentDataRate       int          `json:"currentDataRate"`
+	PrimevalDataRate      int          `json:"privevalDataRate"`
+	ChannelsTxPower       int          `json:"channelsTxPower"`
+	UpLinkCounter         int          `json:"upLinkCounter"`
+	DownLinkCounter       int          `json:"downLinkCounter"`
 }
 
 // NewRak811 create RAK-811 LoRa device connection
@@ -49,8 +90,9 @@ func NewRak811(confFile string) (*Rak811, error) {
 
 	// create new Rak811 device
 	ra := Rak811{
-		dev: dev,
-		at:  at,
+		dev:        dev,
+		at:         at,
+		loraStatus: &LoRaStatus{},
 	}
 
 	// setup handler
@@ -98,14 +140,16 @@ func (r *Rak811) Close() error {
 }
 
 // Initialize run init commands
-func (r *Rak811) InitializeContext(ctx context.Context) error {
+func (r *Rak811) InitializeContext(ctx context.Context) (string, error) {
+	status := StatusNone
+	var err error
 	for _, c := range r.conf.InitCommands {
-		_, err := r.sendCommandContext(ctx, c)
+		_, status, err = r.sendCommandContext(ctx, c)
 		if err != nil {
-			return err
+			return status, err
 		}
 	}
-	return nil
+	return status, nil
 }
 
 // OnError handler
@@ -125,6 +169,123 @@ func (r *Rak811) onResponse(data *atcmd.SerialData, err error) {
 	}
 }
 
+func (r *Rak811) parseLoraStatus(status string, ls *LoRaStatus) *LoRaStatus {
+	ls.At = time.Now()
+	scanner := bufio.NewScanner(strings.NewReader(status))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "RX2_CHANNEL_FREQUENCY") {
+			items := strings.Split(line, ",")
+			for _, item := range items {
+				fields := strings.Split(item, ":")
+				if len(fields) >= 2 {
+					key := strings.TrimSpace(fields[0])
+					value := strings.TrimSpace(fields[1])
+					switch key {
+					case "RX2_CHANNEL_FREQUENCY":
+						if v, err := strconv.ParseInt(value, 10, 64); err == nil {
+							ls.Rx2ChannelFrequency = v
+						}
+					case "RX2_CHANNEL_DR":
+						if v, err := strconv.Atoi(value); err == nil {
+							ls.Rx2ChannelDR = v
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		fields := strings.Split(line, ":")
+		if len(fields) >= 2 {
+			key := strings.TrimSpace(fields[0])
+			value := strings.TrimSpace(fields[1])
+			switch key {
+			case "Work Mode":
+				ls.WorkMode = value
+			case "Region":
+				ls.Region = value
+			case "Send_interval":
+				if d, err := time.ParseDuration(value); err == nil {
+					ls.SendInterval = opt.Duration{Duration: d}
+				}
+			case "Auto send status":
+				if v, err := strconv.ParseBool(value); err == nil {
+					ls.AutoSendStatus = v
+				}
+			case "Join_mode":
+				ls.JoinMode = value
+			case "DevEui":
+				ls.DevEUI = value
+			case "AppEui":
+				ls.AppEUI = value
+			case "AppKey":
+				ls.AppKey = value
+			case "Class":
+				ls.Class = value
+			case "Joined Network":
+				if v, err := strconv.ParseBool(value); err == nil {
+					ls.JoinedNetwork = v
+				}
+			case "IsConfirm":
+				if v, err := strconv.ParseBool(value); err == nil {
+					ls.IsConfirm = v
+				}
+			case "AdrEnable":
+				if v, err := strconv.ParseBool(value); err == nil {
+					ls.AdrEnable = v
+				}
+			case "EnableRepeaterSupport":
+				if v, err := strconv.ParseBool(value); err == nil {
+					ls.EnableRepeaterSupport = v
+				}
+			case "RX_WINDOW_DURATION":
+				if d, err := time.ParseDuration(value); err == nil {
+					ls.RxWindowDuration = opt.Duration{Duration: d}
+				}
+			case "RECEIVE_DELAY_1":
+				if d, err := time.ParseDuration(value); err == nil {
+					ls.ReceiveDelay1 = opt.Duration{Duration: d}
+				}
+			case "RECEIVE_DELAY_2":
+				if d, err := time.ParseDuration(value); err == nil {
+					ls.ReceiveDelay2 = opt.Duration{Duration: d}
+				}
+			case "JOIN_ACCEPT_DELAY_1":
+				if d, err := time.ParseDuration(value); err == nil {
+					ls.JoinAcceptDelay1 = opt.Duration{Duration: d}
+				}
+			case "JOIN_ACCEPT_DELAY_2":
+				if d, err := time.ParseDuration(value); err == nil {
+					ls.JoinAcceptDelay2 = opt.Duration{Duration: d}
+				}
+			case "Current Datarate":
+				if v, err := strconv.Atoi(value); err == nil {
+					ls.CurrentDataRate = v
+				}
+			case "Primeval Datarate":
+				if v, err := strconv.Atoi(value); err == nil {
+					ls.PrimevalDataRate = v
+				}
+			case "ChannelsTxPower":
+				if v, err := strconv.Atoi(value); err == nil {
+					ls.ChannelsTxPower = v
+				}
+			case "UpLinkCounter":
+				if v, err := strconv.Atoi(value); err == nil {
+					ls.UpLinkCounter = v
+				}
+			case "DownLinkCounter":
+				if v, err := strconv.Atoi(value); err == nil {
+					ls.DownLinkCounter = v
+				}
+			}
+		}
+	}
+
+	return ls
+}
+
 // LastError return latest error
 func (r *Rak811) LastError() error {
 	return r.lastError
@@ -135,7 +296,7 @@ func (r *Rak811) IsValid() bool {
 	return r.dev != nil && r.at != nil
 }
 
-func (r *Rak811) SendCommandContext(ctx context.Context, cmd string, okPattern, errPattern string, maxWait time.Duration) (string, error) {
+func (r *Rak811) SendCommandContext(ctx context.Context, cmd string, okPattern, errPattern string, maxWait time.Duration) (string, string, error) {
 	c := Command{
 		AT:         cmd,
 		RegexOK:    okPattern,
@@ -145,31 +306,37 @@ func (r *Rak811) SendCommandContext(ctx context.Context, cmd string, okPattern, 
 	return r.sendCommandContext(ctx, &c)
 }
 
-func (r *Rak811) sendCommandContext(ctx context.Context, cmd *Command) (string, error) {
+func (r *Rak811) sendCommandContext(ctx context.Context, cmd *Command) (string, string, error) {
 	done := make(chan bool, 1)
 	resend := make(chan bool, 1)
 	quit := make(chan bool)
 
+	status := StatusNone
 	reOk, err := cmd.ExpresionOK()
 	if err != nil {
-		return "", err
+		return "", status, err
 	}
 
 	reErr, err := cmd.ExpresionError()
 	if err != nil {
-		return "", err
+		return "", status, err
 	}
 
 	reWakeup, err := cmd.ExpresionWakeup()
 	if err != nil {
-		return "", err
+		return "", status, err
 	}
+
 	fnResp := func(data *atcmd.SerialData, err error) {
 		if err != nil {
 			close(quit)
 		} else if reWakeup.Match(data.Response) {
 			resend <- true
-		} else if reOk.Match(data.Response) || reErr.Match(data.Response) {
+		} else if reOk.Match(data.Response) {
+			status = StatusOK
+			close(done)
+		} else if reErr.Match(data.Response) {
+			status = StatusError
 			close(done)
 		}
 
@@ -186,66 +353,85 @@ func (r *Rak811) sendCommandContext(ctx context.Context, cmd *Command) (string, 
 	var response string
 	id, _, err := r.at.WriteString(cmd.AT, fnResp)
 	if err != nil {
-		return "", err
+		return "", status, err
 	}
 	for {
 		select {
 		case <-ctx.Done():
-			return response, ctx.Err()
+			return response, status, ctx.Err()
 		case <-done:
 			data := r.at.TakeResponse(id)
-			return string(data.Response), nil
+			return r.commandResponse(cmd, data, status, nil)
 		case <-resend:
 			id, _, err = r.at.WriteString(cmd.AT, fnResp)
 			if err != nil {
-				return "", err
+				return "", status, err
 			}
 		}
 	}
 }
 
+func (r *Rak811) commandResponse(c *Command, data *atcmd.SerialData, status string, err error) (string, string, error) {
+	at := strings.ToLower(c.AT)
+	resp := string(data.Response)
+	if at == atLoraStatus {
+		r.parseLoraStatus(resp, r.loraStatus)
+	}
+	return resp, status, err
+}
+
 // FirmwareVersion return firmware version
-func (r *Rak811) FirmwareVersion() (string, error) {
+func (r *Rak811) FirmwareVersion() (string, string, error) {
 	return r.FirmwareVersionContext(context.TODO())
 }
 
 // FirmwareVersionContext check version
-func (r *Rak811) FirmwareVersionContext(ctx context.Context) (string, error) {
+func (r *Rak811) FirmwareVersionContext(ctx context.Context) (string, string, error) {
 	return r.sendCommandContext(ctx, NewCommand(atVersion, r.conf.DefaultTimeout.Duration))
 }
 
 // AtHelp return help
-func (r *Rak811) AtHelp() (string, error) {
+func (r *Rak811) AtHelp() (string, string, error) {
 	return r.AtHelpContext(context.TODO())
 }
 
 // AtHelpContext return help
-func (r *Rak811) AtHelpContext(ctx context.Context) (string, error) {
+func (r *Rak811) AtHelpContext(ctx context.Context) (string, string, error) {
 	return r.sendListComandContext(ctx, atHelp)
 }
 
-func (r *Rak811) DeviceStatus() (string, error) {
+func (r *Rak811) DeviceStatus() (string, string, error) {
 	return r.DeviceStatusContext(context.TODO())
 }
 
-func (r *Rak811) DeviceStatusContext(ctx context.Context) (string, error) {
+func (r *Rak811) DeviceStatusContext(ctx context.Context) (string, string, error) {
 	return r.sendListComandContext(ctx, atDeviceStatus)
 }
 
-func (r *Rak811) LoraStatus() (string, error) {
+func (r *Rak811) LoraStatus() (string, string, error) {
 	return r.LoraStatusContext(context.TODO())
 }
 
-func (r *Rak811) LoraStatusContext(ctx context.Context) (string, error) {
+func (r *Rak811) LoraStatusContext(ctx context.Context) (string, string, error) {
 	return r.sendListComandContext(ctx, atLoraStatus)
 }
 
-func (r *Rak811) LoraJoinContext(ctx context.Context) (string, error) {
+// LastLoraStatus return latest readed status
+func (r *Rak811) LastLoraStatus() *LoRaStatus {
+	return r.loraStatus
+}
+
+func (r *Rak811) LoraJoinContext(ctx context.Context) (string, string, error) {
 	return r.sendCommandContext(ctx, &Command{AT: atLoraJoin})
 }
 
-func (r *Rak811) sendListComandContext(ctx context.Context, cmd string) (string, error) {
-	okPattern := "(?s)OK(.*)List End(.*)\\*\r\n"
+func (r *Rak811) LoraSetDataRateContext(ctx context.Context, dr int) (string, string, error) {
+	atDr := fmt.Sprintf(atLoraSetDataRate, dr)
+	return r.sendCommandContext(ctx, NewCommand(atDr, r.conf.DefaultTimeout.Duration))
+}
+
+func (r *Rak811) sendListComandContext(ctx context.Context, cmd string) (string, string, error) {
+	okPattern := "(?s)OK(.*)List End(.*)\\*\\r\\n"
 	c := Command{
 		AT:      cmd,
 		Timeout: r.conf.DefaultTimeout,
@@ -255,17 +441,22 @@ func (r *Rak811) sendListComandContext(ctx context.Context, cmd string) (string,
 }
 
 // SendDataContext sends data through LoRa
-func (r *Rak811) SendDataContext(ctx context.Context, channel int, data []byte) ([]byte, error) {
+func (r *Rak811) SendDataContext(ctx context.Context, channel int, data []byte) ([]byte, string, error) {
 	// TODO, OK: pattern, ERROR: Error pattern
 	at := fmt.Sprintf(atLoraSend, channel, data)
-	res, err := r.sendCommandContext(ctx, NewCommand(at, r.conf.DefaultTimeout.Duration))
-	if err != nil {
-		return nil, err
+	cmd := Command{
+		AT:      at,
+		Timeout: r.conf.DefaultTimeout,
+		RegexOK: "at\\+recv=(.*)\\r\\n",
 	}
-	return []byte(res), nil
+	res, status, err := r.sendCommandContext(ctx, &cmd)
+	if err != nil {
+		return nil, status, err
+	}
+	return []byte(res), status, nil
 }
 
 // SendData sends data through LoRa
-func (r *Rak811) SendData(ctx context.Context, channel int, data []byte) ([]byte, error) {
+func (r *Rak811) SendData(ctx context.Context, channel int, data []byte) ([]byte, string, error) {
 	return r.SendDataContext(context.TODO(), channel, data)
 }

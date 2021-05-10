@@ -1,7 +1,7 @@
 {
     dev: {
         //port: "/dev/ttyS0"
-        port: "COM3"
+        port: "COM9"
         readTimeout: "500ms"
     }
     defaultTimeout: 30s
@@ -12,6 +12,7 @@
         {at: "at+help", regexOk: "(?s)OK(.*)List End(.*)\\*\\r\\n", timeout: "5s"}
         {at: "at+get_config=device:status", regexOk: "(?s)OK(.*)List End(.*)\\*\\r\\n", timeout: "5s"}
         {at: "at+get_config=lora:status", regexOk: "(?s)OK(.*)List End(.*)\\*\\r\\n", timeout: "5s"}
+        {at: "at+set_config=lora:dr:5", timeout: "5s"}
         //{at: "at+join", timeout: "60s"}
     ]
 }

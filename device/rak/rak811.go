@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,10 @@ const (
 	StatusNone  = ""
 )
 
+const (
+	LoRaReceivePattern = "at\\+recv=(.*):(.*)\\r\\n"
+)
+
 // wake up constant
 var WakeUp = []byte("Wake up.\r\n")
 
@@ -37,8 +42,15 @@ type Rak811 struct {
 	conf      Config
 	outCloser io.Closer
 	outWriter io.Writer
+	reRcvExpr *regexp.Regexp
 
-	loraStatus *LoRaStatus
+	loraStatus       *LoRaStatus
+	incomingDataList []*IncomingData
+}
+
+type IncomingData struct {
+	At   time.Time
+	Data []byte
 }
 
 // LoraSt
@@ -101,9 +113,13 @@ func NewRak811(confFile string) (*Rak811, error) {
 
 	// Default comm timeout
 	ra.conf.DefaultTimeout.Duration = 10 * time.Second
+	ra.conf.ReceivePattern = LoRaReceivePattern
 	if err := op.AsStruct(&ra.conf); err != nil {
 		return nil, err
 	}
+
+	// create receive pattern
+	ra.reRcvExpr = regexp.MustCompile(ra.conf.ReceivePattern)
 
 	// get output
 	wr, cl, err := ra.conf.ResponseWriter()
@@ -166,6 +182,27 @@ func (r *Rak811) onResponse(data *atcmd.SerialData, err error) {
 			data.At.Format(time.RFC3339),
 			string(data.Cmd),
 			string(data.Response))
+	}
+
+	// is it a data?
+	// 2
+	match := r.reRcvExpr.FindSubmatch(data.Response)
+	if n := len(match); n > 0 {
+		if r.conf.Verbose && r.outWriter != nil {
+			fmt.Fprintf(r.outWriter, "DATA>> %02X\n", data.Response)
+		}
+		if nd := len(match[n-1]); nd > 0 {
+			buf := make([]byte, nd)
+			copy(buf, match[n-1])
+			incomingData := &IncomingData{
+				At:   time.Now(),
+				Data: buf,
+			}
+			r.incomingDataList = append(r.incomingDataList, incomingData)
+			if r.conf.Verbose && r.outWriter != nil {
+				fmt.Fprintf(r.outWriter, "DATA: %02X\n", buf)
+			}
+		}
 	}
 }
 
@@ -442,12 +479,17 @@ func (r *Rak811) sendListComandContext(ctx context.Context, cmd string) (string,
 
 // SendDataContext sends data through LoRa
 func (r *Rak811) SendDataContext(ctx context.Context, channel int, data []byte) ([]byte, string, error) {
-	// TODO, OK: pattern, ERROR: Error pattern
+	// Incomming data: at+recv=2,-59,34,4:50515253
+	// ch,RSSI,SNR?,channel:HEX
 	at := fmt.Sprintf(atLoraSend, channel, data)
+	rcvPattern := LoRaReceivePattern
+	if r.conf.ReceivePattern != "" {
+		rcvPattern = r.conf.ReceivePattern
+	}
 	cmd := Command{
 		AT:      at,
 		Timeout: r.conf.DefaultTimeout,
-		RegexOK: "at\\+recv=(.*)\\r\\n",
+		RegexOK: rcvPattern, //"at\\+recv=(.*)\\r\\n",
 	}
 	res, status, err := r.sendCommandContext(ctx, &cmd)
 	if err != nil {

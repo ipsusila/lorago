@@ -15,6 +15,7 @@ type Config struct {
 	ResponseOutput string       `json:"responseOutput"`
 	Verbose        bool         `json:"verbose"`
 	InitCommands   []*Command   `json:"initCommands"`
+	ReceivePattern string       `json:"receivePattern"`
 }
 
 // ResponseWriter return writer for the output

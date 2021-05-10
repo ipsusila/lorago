@@ -24,8 +24,8 @@ const (
 )
 
 const (
-	OkPattern  = "OK(.*)\r\n"
-	ErrPattern = "ERROR:(.*)\r\n"
+	OkPattern  = "OK(.*)\\r\\n"
+	ErrPattern = "ERROR:(.*)\\r\\n"
 )
 
 // known data

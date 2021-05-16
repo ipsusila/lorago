@@ -40,6 +40,7 @@ func (td *TrackingData) Encode() []byte {
 	buf := bytes.Buffer{}
 	buf.Write([]byte("@S"))
 
+	// Order of the package (34 bytes)
 	bo := binary.BigEndian
 	binary.Write(&buf, bo, td.At.Local().UnixNano())
 	binary.Write(&buf, bo, td.Lon)
@@ -48,6 +49,10 @@ func (td *TrackingData) Encode() []byte {
 	binary.Write(&buf, bo, td.Spd)
 
 	return buf.Bytes()
+}
+
+func (td *TrackingData) Heartbeat() []byte {
+	return []byte("@OK")
 }
 
 func NewTracker() *Tracker {
@@ -131,10 +136,17 @@ func (t *Tracker) Run(confFile string) {
 	// start watching GPS
 	go t.watchGpsd()
 
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-t.quit:
 			return
+		case <-ticker.C:
+			hb := TrackingData{}
+			t.SetReady(false)
+			t.sendData(r811, &hb, 15*time.Second)
+			t.SetReady(true)
 		case d := <-t.data:
 			t.SetReady(false)
 			t.sendData(r811, d, 15*time.Second)
@@ -148,7 +160,10 @@ func (t *Tracker) sendData(r811 *rak.Rak811, d *TrackingData, timeout time.Durat
 	ctx, cancel := context.WithTimeout(context.TODO(), timeout)
 	defer cancel()
 
-	encoded := d.Encode()
+	encoded := d.Heartbeat()
+	if !d.At.IsZero() {
+		encoded = d.Encode()
+	}
 	resp, status, err := r811.SendDataContext(ctx, -1, encoded)
 	fmt.Printf("RESP: %s, STATUS: %s, Err: %v\n", resp, status, err)
 }

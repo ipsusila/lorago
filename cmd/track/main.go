@@ -41,6 +41,7 @@ type Tracker struct {
 	sync.Mutex
 	ready bool
 
+	lastSent   *TrackingData
 	quit       chan bool
 	done       chan bool
 	data       chan *TrackingData
@@ -78,6 +79,21 @@ func NewTracker() *Tracker {
 		Timeout: 10 * time.Second,
 	}
 	return &tr
+}
+
+func (t *Tracker) ShouldSend(d *TrackingData) bool {
+	if t.lastSent == nil {
+		return true
+	}
+
+	if t.lastSent.At.Equal(d.At) {
+		return false
+	}
+
+	if t.lastSent.Lon == d.Lon && t.lastSent.Lat == d.Lat {
+		return false
+	}
+	return true
 }
 
 func (t *Tracker) Quit() {
@@ -178,6 +194,11 @@ func (t *Tracker) Run(confFile string) {
 }
 
 func (t *Tracker) sendData(r811 *rak.Rak811, d *TrackingData, timeout time.Duration) {
+	if !t.ShouldSend(d) {
+		return
+	}
+
+	// send data
 	ctx, cancel := context.WithTimeout(context.TODO(), timeout)
 	defer cancel()
 
@@ -191,6 +212,8 @@ func (t *Tracker) sendData(r811 *rak.Rak811, d *TrackingData, timeout time.Durat
 		//Save
 		fmt.Fprintf(t.SentWriter, "%s;%s;%.5f;%.5f;%.1f;%.1f\n",
 			d.At.Format(time.RFC3339), d.Mode, d.Lon, d.Lat, d.Alt, d.Spd)
+		// save
+		t.lastSent = d
 	}
 }
 

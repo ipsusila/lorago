@@ -5,7 +5,7 @@
         readTimeout: "500ms"
     }
     defaultTimeout: 30s
-    responseOutput: rak811-out.txt
+    responseOutput: stdout
     verbose: true
     loraChannel: 2
     initCommands: [

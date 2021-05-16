@@ -228,9 +228,8 @@ func (t *Tracker) watchGpsd() error {
 	}
 
 	// POSITION Filter
-	lastTD := &TrackingData{}
 	gps.AddFilter("TPV", func(r interface{}) {
-		tpv := r.(*gpsd.TPVReport)
+		tpv := *(r.(*gpsd.TPVReport))
 		td := TrackingData{
 			At:   tpv.Time,
 			Lon:  float32(tpv.Lon),
@@ -241,22 +240,16 @@ func (t *Tracker) watchGpsd() error {
 		}
 
 		if t.LocWriter != nil {
-			fmt.Fprintf(t.SentWriter, "%s;%s;%.7f;%.7f;%.1f;%.1f\n",
+			fmt.Fprintf(t.LocWriter, "%s;%s;%.7f;%.7f;%.1f;%.1f\n",
 				tpv.Time.Format(time.RFC3339), td.Mode, tpv.Lon, tpv.Lat, tpv.Alt, tpv.Speed)
 		}
 
-		eq := lastTD.At.Equal(td.At) ||
-			(lastTD.Lon == td.Lon && lastTD.Lat == td.Lat)
-
-		if !eq {
-			lastTD = &td
-			// send data
-			go func() {
-				if t.IsReady() {
-					t.data <- &td
-				}
-			}()
-		}
+		// send location data if needed
+		go func() {
+			if t.IsReady() {
+				t.data <- &td
+			}
+		}()
 	})
 
 	done := gps.Watch()
@@ -287,7 +280,7 @@ func main() {
 	tr := NewTracker()
 	// store gps data
 	if *sGps != "" {
-		f, err := os.OpenFile(*sOut, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(*sGps, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err == nil {
 			tr.LocWriter = f
 			defer f.Close()

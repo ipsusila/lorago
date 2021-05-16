@@ -138,6 +138,15 @@ func (t *Tracker) Run(confFile string) {
 	// start watching GPS
 	go t.watchGpsd()
 
+	fnSendHb := func(timeout time.Duration) {
+		hb := TrackingData{}
+		t.SetReady(false)
+		t.sendData(r811, &hb, timeout)
+		t.SetReady(true)
+	}
+	// send heartbeat at firsttime
+	fnSendHb(15 * time.Second)
+
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -145,10 +154,7 @@ func (t *Tracker) Run(confFile string) {
 		case <-t.quit:
 			return
 		case <-ticker.C:
-			hb := TrackingData{}
-			t.SetReady(false)
-			t.sendData(r811, &hb, 15*time.Second)
-			t.SetReady(true)
+			fnSendHb(15 * time.Second)
 		case d := <-t.data:
 			t.SetReady(false)
 			t.sendData(r811, d, 15*time.Second)

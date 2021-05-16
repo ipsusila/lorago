@@ -37,6 +37,8 @@ type Tracker struct {
 }
 
 func (td *TrackingData) Encode() []byte {
+	fmt.Printf("Sending lon=%.5f, lat=%.5f, alt=%f, spd=%f\n",
+		td.Lon, td.Lat, td.Alt, td.Spd)
 	buf := bytes.Buffer{}
 	buf.Write([]byte("@S"))
 

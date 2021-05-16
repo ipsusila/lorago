@@ -21,8 +21,8 @@ type FnOnData func(td *TrackingData)
 
 type TrackingData struct {
 	At  time.Time `json:"at"`
-	Lon float64   `json:"lon"`
-	Lat float64   `json:"lat"`
+	Lon float32   `json:"lon"`
+	Lat float32   `json:"lat"`
 	Alt float32   `json:"alt"`
 	Spd float32   `json:"spd"`
 }
@@ -45,8 +45,8 @@ func (td *TrackingData) Encode() []byte {
 	binary.Write(&buf, bo, td.At.Local().UnixNano())
 	binary.Write(&buf, bo, td.Lon)
 	binary.Write(&buf, bo, td.Lat)
-	binary.Write(&buf, bo, td.Alt)
-	binary.Write(&buf, bo, td.Spd)
+	binary.Write(&buf, bo, uint8(td.Alt))
+	binary.Write(&buf, bo, uint8(td.Spd))
 
 	return buf.Bytes()
 }
@@ -182,8 +182,8 @@ func (t *Tracker) watchGpsd() error {
 		tpv := r.(*gpsd.TPVReport)
 		td := TrackingData{
 			At:  tpv.Time,
-			Lon: tpv.Lon,
-			Lat: tpv.Lat,
+			Lon: float32(tpv.Lon),
+			Lat: float32(tpv.Lat),
 			Alt: float32(tpv.Alt),
 			Spd: float32(tpv.Speed),
 		}

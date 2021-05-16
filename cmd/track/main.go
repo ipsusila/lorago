@@ -227,6 +227,7 @@ func (t *Tracker) watchGpsd() error {
 	}
 
 	// POSITION Filter
+	lastTD := &TrackingData{}
 	gps.AddFilter("TPV", func(r interface{}) {
 		tpv := r.(*gpsd.TPVReport)
 		td := TrackingData{
@@ -237,12 +238,19 @@ func (t *Tracker) watchGpsd() error {
 			Spd:  float32(tpv.Speed),
 			Mode: gpsModes[tpv.Mode],
 		}
-		// send data
-		go func() {
-			if t.IsReady() {
-				t.data <- &td
-			}
-		}()
+
+		eq := lastTD.At.Equal(td.At) ||
+			(lastTD.Lon == td.Lon && lastTD.Lat == td.Lat)
+
+		if !eq {
+			lastTD = &td
+			// send data
+			go func() {
+				if t.IsReady() {
+					t.data <- &td
+				}
+			}()
+		}
 	})
 
 	done := gps.Watch()

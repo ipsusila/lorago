@@ -47,8 +47,8 @@ func (td *TrackingData) Encode() []byte {
 	binary.Write(&buf, bo, uint32(td.At.Local().Unix()))
 	binary.Write(&buf, bo, td.Lon)
 	binary.Write(&buf, bo, td.Lat)
-	//binary.Write(&buf, bo, uint8(td.Alt))
-	//binary.Write(&buf, bo, uint8(td.Spd))
+	binary.Write(&buf, bo, uint8(td.Alt))
+	binary.Write(&buf, bo, uint8(td.Spd))
 
 	return buf.Bytes()
 }

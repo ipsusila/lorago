@@ -7,6 +7,7 @@
     defaultTimeout: 30s
     responseOutput: rak811-out.txt
     verbose: true
+    loraChannel: 2
     initCommands: [
         {at: "at+version", timeout: "2s"}
         {at: "at+help", regexOk: "(?s)OK(.*)List End(.*)\\*\\r\\n", timeout: "5s"}

@@ -20,12 +20,21 @@ import (
 
 type FnOnData func(td *TrackingData)
 
+// list of gpsmodes
+var gpsModes = map[gpsd.Mode]string{
+	gpsd.NoValueSeen: "NV",
+	gpsd.NoFix:       "NF",
+	gpsd.Mode2D:      "2D",
+	gpsd.Mode3D:      "3D",
+}
+
 type TrackingData struct {
-	At  time.Time `json:"at"`
-	Lon float32   `json:"lon"`
-	Lat float32   `json:"lat"`
-	Alt float32   `json:"alt"`
-	Spd float32   `json:"spd"`
+	Mode string    `json:"mode"`
+	At   time.Time `json:"at"`
+	Lon  float32   `json:"lon"`
+	Lat  float32   `json:"lat"`
+	Alt  float32   `json:"alt"`
+	Spd  float32   `json:"spd"`
 }
 
 type Tracker struct {
@@ -180,8 +189,8 @@ func (t *Tracker) sendData(r811 *rak.Rak811, d *TrackingData, timeout time.Durat
 	fmt.Printf("RESP: %s, STATUS: %s, Err: %v\n", resp, status, err)
 	if status == rak.StatusOK && !d.At.IsZero() && t.SentWriter != nil {
 		//Save
-		fmt.Fprintf(t.SentWriter, "%s;%.5f;%.5f;%.1f;%.1f\n",
-			d.At.Format(time.RFC3339), d.Lon, d.Lat, d.Alt, d.Spd)
+		fmt.Fprintf(t.SentWriter, "%s;%s;%.5f;%.5f;%.1f;%.1f\n",
+			d.At.Format(time.RFC3339), d.Mode, d.Lon, d.Lat, d.Alt, d.Spd)
 	}
 }
 
@@ -198,11 +207,12 @@ func (t *Tracker) watchGpsd() error {
 	gps.AddFilter("TPV", func(r interface{}) {
 		tpv := r.(*gpsd.TPVReport)
 		td := TrackingData{
-			At:  tpv.Time,
-			Lon: float32(tpv.Lon),
-			Lat: float32(tpv.Lat),
-			Alt: float32(tpv.Alt),
-			Spd: float32(tpv.Speed),
+			At:   tpv.Time,
+			Lon:  float32(tpv.Lon),
+			Lat:  float32(tpv.Lat),
+			Alt:  float32(tpv.Alt),
+			Spd:  float32(tpv.Speed),
+			Mode: gpsModes[tpv.Mode],
 		}
 		// send data
 		go func() {

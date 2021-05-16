@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -21,8 +23,8 @@ type TrackingData struct {
 	At  time.Time `json:"at"`
 	Lon float64   `json:"lon"`
 	Lat float64   `json:"lat"`
-	Alt float64   `json:"alt"`
-	Spd float64   `json:"spd"`
+	Alt float32   `json:"alt"`
+	Spd float32   `json:"spd"`
 }
 
 type Tracker struct {
@@ -35,7 +37,17 @@ type Tracker struct {
 }
 
 func (td *TrackingData) Encode() []byte {
-	return []byte{}
+	buf := bytes.Buffer{}
+	buf.Write([]byte("@S"))
+
+	bo := binary.BigEndian
+	binary.Write(&buf, bo, td.At.Local().UnixNano())
+	binary.Write(&buf, bo, td.Lon)
+	binary.Write(&buf, bo, td.Lat)
+	binary.Write(&buf, bo, td.Alt)
+	binary.Write(&buf, bo, td.Spd)
+
+	return buf.Bytes()
 }
 
 func NewTracker() *Tracker {
@@ -157,8 +169,8 @@ func (t *Tracker) watchGpsd() error {
 			At:  tpv.Time,
 			Lon: tpv.Lon,
 			Lat: tpv.Lat,
-			Alt: tpv.Alt,
-			Spd: tpv.Speed,
+			Alt: float32(tpv.Alt),
+			Spd: float32(tpv.Speed),
 		}
 		// send data
 		go func() {
@@ -188,6 +200,7 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
+	close(tr.quit)
 	fmt.Println("CTRL+C catched!")
 	<-tr.done
 	fmt.Println("Done application!")

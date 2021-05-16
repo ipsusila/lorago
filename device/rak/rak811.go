@@ -486,6 +486,9 @@ func (r *Rak811) sendListComandContext(ctx context.Context, cmd string) (string,
 func (r *Rak811) SendDataContext(ctx context.Context, channel int, data []byte) ([]byte, string, error) {
 	// Incomming data: at+recv=2,-59,34,4:50515253
 	// ch,RSSI,SNR?,channel:HEX
+	if channel < 0 {
+		channel = r.conf.LoRaChannel
+	}
 	at := fmt.Sprintf(atLoraSend, channel, data)
 	rcvPattern := LoRaConfirmPattern
 	if r.conf.ConfirmPattern != "" {

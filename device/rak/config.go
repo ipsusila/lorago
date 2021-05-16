@@ -17,6 +17,7 @@ type Config struct {
 	InitCommands    []*Command   `json:"initCommands"`
 	ConfirmPattern  string       `json:"confirmPattern"`
 	DownLinkPattern string       `json:"downLinkPattern"`
+	LoRaChannel     int          `json:"loraChannel"`
 }
 
 // ResponseWriter return writer for the output

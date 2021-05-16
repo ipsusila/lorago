@@ -66,6 +66,7 @@ const (
 
 // Command data
 type Command struct {
+	Alias       string       `json:"alias"`
 	AT          string       `json:"at"`
 	Timeout     opt.Duration `json:"timeout"`
 	RegexOK     string       `json:"regexOk"`

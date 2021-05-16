@@ -1,8 +1,7 @@
 {
     dev: {
-        //port: "/dev/ttyS0"
+        port: "/dev/ttyS0"
         //port: "COM9"
-        port: "/dev/ttyUSB0"
         readTimeout: "500ms"
     }
     defaultTimeout: 30s

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sync"
@@ -31,9 +32,11 @@ type Tracker struct {
 	sync.Mutex
 	ready bool
 
-	quit chan bool
-	done chan bool
-	data chan *TrackingData
+	quit       chan bool
+	done       chan bool
+	data       chan *TrackingData
+	Timeout    time.Duration
+	SentWriter io.Writer
 }
 
 func (td *TrackingData) Encode() []byte {
@@ -59,10 +62,11 @@ func (td *TrackingData) Heartbeat() []byte {
 
 func NewTracker() *Tracker {
 	tr := Tracker{
-		ready: false,
-		quit:  make(chan bool, 1),
-		done:  make(chan bool, 1),
-		data:  make(chan *TrackingData, 1),
+		ready:   false,
+		quit:    make(chan bool, 1),
+		done:    make(chan bool, 1),
+		data:    make(chan *TrackingData, 1),
+		Timeout: 10 * time.Second,
 	}
 	return &tr
 }
@@ -145,7 +149,7 @@ func (t *Tracker) Run(confFile string) {
 		t.SetReady(true)
 	}
 	// send heartbeat at firsttime
-	fnSendHb(15 * time.Second)
+	fnSendHb(t.Timeout)
 
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -154,12 +158,12 @@ func (t *Tracker) Run(confFile string) {
 		case <-t.quit:
 			return
 		case <-ticker.C:
-			fnSendHb(15 * time.Second)
+			fnSendHb(t.Timeout)
 		case d := <-t.data:
 			t.SetReady(false)
-			t.sendData(r811, d, 15*time.Second)
+			t.sendData(r811, d, t.Timeout)
 			t.SetReady(true)
-			time.Sleep(1 * time.Second)
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 }
@@ -174,6 +178,11 @@ func (t *Tracker) sendData(r811 *rak.Rak811, d *TrackingData, timeout time.Durat
 	}
 	resp, status, err := r811.SendDataContext(ctx, -1, encoded)
 	fmt.Printf("RESP: %s, STATUS: %s, Err: %v\n", resp, status, err)
+	if status == rak.StatusOK && !d.At.IsZero() && t.SentWriter != nil {
+		//Save
+		fmt.Fprintf(t.SentWriter, "%s;%.5f;%.5f;%.1f;%.1f\n",
+			d.At.Format(time.RFC3339), d.Lon, d.Lat, d.Alt, d.Spd)
+	}
 }
 
 func (t *Tracker) watchGpsd() error {
@@ -215,9 +224,25 @@ func (t *Tracker) watchGpsd() error {
 
 func main() {
 	sConf := flag.String("conf", "config.hjson", "Configuratio file")
+	vTimeout := flag.Int("timeout", 5, "data send timeout in second")
+	sOut := flag.String("out", "out.csv", "output file")
 	flag.Parse()
 
+	// open file
+	fd, err := os.OpenFile(*sOut, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("Open file error: ", err)
+		return
+	}
+	defer fd.Close()
+
 	tr := NewTracker()
+	if *vTimeout > 0 {
+		tr.Timeout = time.Duration(*vTimeout) * time.Second
+	}
+	tr.SentWriter = fd
+
+	// start watching
 	go tr.Run(*sConf)
 
 	sig := make(chan os.Signal, 1)

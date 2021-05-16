@@ -47,6 +47,7 @@ type Tracker struct {
 	data       chan *TrackingData
 	Timeout    time.Duration
 	SentWriter io.Writer
+	LocWriter  io.Writer
 }
 
 func (td *TrackingData) Encode() []byte {
@@ -239,6 +240,11 @@ func (t *Tracker) watchGpsd() error {
 			Mode: gpsModes[tpv.Mode],
 		}
 
+		if t.LocWriter != nil {
+			fmt.Fprintf(t.SentWriter, "%s;%s;%.7f;%.7f;%.1f;%.1f\n",
+				tpv.Time.Format(time.RFC3339), td.Mode, tpv.Lon, tpv.Lat, tpv.Alt, tpv.Speed)
+		}
+
 		eq := lastTD.At.Equal(td.At) ||
 			(lastTD.Lon == td.Lon && lastTD.Lat == td.Lat)
 
@@ -267,6 +273,7 @@ func main() {
 	sConf := flag.String("conf", "config.hjson", "Configuratio file")
 	vTimeout := flag.Int("timeout", 5, "data send timeout in second")
 	sOut := flag.String("out", "out.csv", "output file")
+	sGps := flag.String("gps", "", "GPS data output file")
 	flag.Parse()
 
 	// open file
@@ -278,6 +285,15 @@ func main() {
 	defer fd.Close()
 
 	tr := NewTracker()
+	// store gps data
+	if *sGps != "" {
+		f, err := os.OpenFile(*sOut, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err == nil {
+			tr.LocWriter = f
+			defer f.Close()
+		}
+	}
+
 	if *vTimeout > 0 {
 		tr.Timeout = time.Duration(*vTimeout) * time.Second
 	}

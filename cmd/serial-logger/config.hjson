@@ -1,0 +1,13 @@
+{
+    dev: {
+        //port: "/dev/ttyS0"
+        port: "COM5"
+        //port: "/dev/ttyUSB0"
+        readTimeout: "500ms"
+    }
+    logger: {
+        interval: "200ms"
+        output: output.csv
+        verbose: false
+    }
+}
